@@ -125,7 +125,28 @@ By tweaking the simulated `best_ask` and `best_bid` values in your mock code, yo
 
 ---
 
-## Next Testing Steps
+## 6. How to Use the Historical "Order Book" and "Trades" Data
+
+If you've been given historical data (like a spreadsheet of past Order Books and Trades), it is arguably your most powerful tool. You shouldn't just guess your `acceptable_price` formula—you should prove it using this data!
+
+Here are the specific patterns and analyses you need to perform on your historical data files:
+
+### A. Is the Price "Pegged" or "Volatile"? (Price Discovery)
+The very first thing you need to do is calculate the Mid-Price for every row in your historical Order Book data and plot it on a line graph.
+- **The Flatline Pattern (Pegged):** If you plot `EMERALDS` and notice the mid-price is *always* perfectly hovering around 10,000 all day long, you have discovered a massive pattern. Instead of calculating `acceptable_price = (best_bid + best_ask)/2`, you can hardcode `acceptable_price = 10000`. This means you will aggressively buy anytime it drops to 9,998 and sell when it hits 10,002.
+- **The Wavy Pattern (Mean Reverting):** `TOMATOES` might look like a rollercoaster. If it goes up and down but always returns to the center, you need to calculate a **Simple Moving Average (SMA)** over the last 10 minutes of data to serve as your `acceptable_price`.
+
+### B. Order Book Imbalance (Predicting the Future)
+Look at the *amounts* in your historical order book, not just the prices. 
+- **The Pattern:** If the Order Book currently has 100 people wanting to buy tomatoes, but only 2 people wanting to sell tomatoes... what will happen to the price in the next few seconds? It will shoot up!
+- **How to use it:** You can do math on historical data to prove this. If you calculate `Imbalance = (Total Buy Amount) - (Total Sell Amount)`, you might discover a pattern where extreme buy imbalances *always* precede a price spike. You can code your bot to buy heavily when it spots this imbalance!
+
+### C. Analyzing the "Trades" Data
+The Trades data shows you trades that *actually happened* (the matches).
+- **Finding Resistance:** Look at the trade data to see the maximum price `TOMATOES` ever reached. Let's say tomatoes never sold above $150. If the price reaches $148, you know a drop is coming, so you immediately sell your whole inventory.
+- **Competitor Bots:** The market trades let you see where the *other* bots are willing to trade. If you see a lot of trades constantly executing at a specific price bracket, that tells you the parameters your competitors are using.
+
+**Your Action Item:** Open your historical data in Python using a library like `pandas` (or just load it in Excel!) and create a simple line chart of the prices. Look at `EMERALDS` vs `TOMATOES` and immediately you will see what their fundamental behavior is!
 
 - **Try adjusting the `acceptable_price` formula!** For example, what happens if you make the formula `((best_ask * 0.4) + (best_bid * 0.6))`? 
 - Try tracking **Moving Averages**, which is taking the value of `acceptable_price` over the past 5 iterations and generating an average. This gives your formula "historical memory" rather than just looking at the exact second it executes!
