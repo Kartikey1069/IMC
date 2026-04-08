@@ -1,6 +1,6 @@
 from datamodel import OrderDepth, UserId, TradingState, Order
 from typing import List
-import string
+import json
 
 class Trader:
 
@@ -9,73 +9,108 @@ class Trader:
 
     def run(self, state: TradingState):
         """
-        The main method called by the simulation at every time-step.
-        It calculates our 'Fair Value' for the given products and places buy/sell
-        orders to capture the difference in prices.
+        The main trading logic for the competition.
+        Implements a Dual-Pronged Strategy based on data analysis:
+        - EMERALDS: Mean-Reverting logic (Hardcoded Fair Value bounds)
+        - TOMATOES: Momentum / Moving Average logic (Tracking State)
         """
-        # A dictionary holding all the orders we want to execute at this time-step
         result = {}
+        
+        # Position limits
+        POSITION_LIMIT = 20
 
-        # Here we set a placeholder position limit of 20 as discussed.
-        # This means we won't hold more than 20 items or owe more than 20 items.
-        POSITION_LIMIT_EMERALDS = 20
-        POSITION_LIMIT_TOMATOES = 20
+        # --- MEMORY (STATE TRACKING) ---
+        # The IMC environment does not persist variables normally across 'runs'.
+        # We must deserialize the system-provided traderData string into a python dictionary!
+        if state.traderData == "":
+            trader_data_dict = {"tomato_prices": []}
+        else:
+            try:
+                trader_data_dict = json.loads(state.traderData)
+            except json.JSONDecodeError:
+                trader_data_dict = {"tomato_prices": []}
 
-        # Loop over every product (e.g. EMERALDS, TOMATOES) available in the order book
+
         for product in state.order_depths:
             order_depth: OrderDepth = state.order_depths[product]
             orders: List[Order] = []
             
-            # Look up position limit based on product
-            position_limit = POSITION_LIMIT_EMERALDS if product == "EMERALDS" else POSITION_LIMIT_TOMATOES
-
-            # Get our current position (how much of the product we currently own)
-            # If we don't own any, we default to 0.
             current_position = state.position.get(product, 0)
+            
+            # Must ensure there is data in the order book before evaluating prices
+            if len(order_depth.sell_orders) == 0 or len(order_depth.buy_orders) == 0:
+                continue
 
-            # To make informed trades, we must ensure there are both buyers and sellers
-            if len(order_depth.sell_orders) != 0 and len(order_depth.buy_orders) != 0:
+            # In Python, dictionaries representing orders are sorted by price keys.
+            best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+            best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+            
+            # -----------------------------------------------
+            # 🟢 STRATEGY 1: MARKET MAKING (MEAN-REVERSION)
+            # ASSET: EMERALDS
+            # -----------------------------------------------
+            if product == "EMERALDS":
+                # Data showed EMERALDS are perfectly anchored to 10000.
+                # No dynamic math needed. We exploit the tight range violently.
                 
-                # Sort and retrieve the best (lowest) ask and the best (highest) bid.
-                # In Python, dictionaries representing orders are sorted by price keys.
-                best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
-                
-                # --- DATA METRICS CALCULATION ---
-                # Calculate the "Fair Value" (Mid-Price) of the asset.
-                # Since EMERALDS acts historically stable and TOMATOES fluctuate, using the
-                # true middle of the bid-ask gap serves as a statistically solid anchor price.
-                acceptable_price = (best_ask + best_bid) / 2
-                
-                # --- TRADING LOGIC ---
-                # BUY LOGIC: Is there a seller selling the product for LESS than our true Fair Value?
-                if int(best_ask) < acceptable_price:
-                    # Determine how many items we are allowed to buy without exceeding our limit
-                    available_to_buy_capacity = position_limit - current_position
-                    
-                    if available_to_buy_capacity > 0:
-                        # We want to buy at the best_ask. We can only buy what the seller offers (-best_ask_amount)
-                        # or whatever we have capacity for, whichever is smaller.
-                        buy_quantity = min(-best_ask_amount, available_to_buy_capacity)
-                        print("BUY", str(buy_quantity) + "x", best_ask)
+                # BUY LOGIC: Has the price dropped uncharacteristically low?
+                if best_ask < 9998:
+                    available_to_buy = POSITION_LIMIT - current_position
+                    if available_to_buy > 0:
+                        buy_quantity = min(-best_ask_amount, available_to_buy)
+                        print(f"EMERALDS: Buying cheap at {best_ask}!")
                         orders.append(Order(product, best_ask, buy_quantity))
                         
-                # SELL LOGIC: Is there a buyer willing to pay MORE than our true Fair Value?
-                if int(best_bid) > acceptable_price:
-                    # Determine how many items we are allowed to short-sell without violating our negative limit
-                    capacity_to_short = current_position - (-position_limit)
-                    
+                # SELL LOGIC: Has the price shot uncharacteristically high?
+                if best_bid > 10002:
+                    capacity_to_short = current_position - (-POSITION_LIMIT)
                     if capacity_to_short > 0:
-                        # We want to sell our asset to the highest bidder.
                         sell_quantity = min(best_bid_amount, capacity_to_short)
-                        print("SELL", str(sell_quantity) + "x", best_bid)
-                        # Order quantity must be negative when selling
+                        print(f"EMERALDS: Selling high at {best_bid}!")
                         orders.append(Order(product, best_bid, -sell_quantity))
-            
-            # Finalize orders for this product
+
+            # -----------------------------------------------
+            # 🔴 STRATEGY 2: MOVING AVERAGES (TRENDING)
+            # ASSET: TOMATOES
+            # -----------------------------------------------
+            elif product == "TOMATOES":
+                # 1. Update State Memory (We need the history of prices to detect the trend)
+                mid_price = (best_ask + best_bid) / 2
+                trader_data_dict["tomato_prices"].append(mid_price)
+                
+                # Limit memory to the last 50 ticks to calculate our Long MA safely and prevent memory leak
+                if len(trader_data_dict["tomato_prices"]) > 50:
+                    trader_data_dict["tomato_prices"] = trader_data_dict["tomato_prices"][-50:]
+                    
+                # 2. Trading Logic (Wait until we have gathered at least 50 ticks of data)
+                if len(trader_data_dict["tomato_prices"]) == 50:
+                    # Calculate Simple Moving Averages (Average over Time)
+                    short_ma = sum(trader_data_dict["tomato_prices"][-10:]) / 10
+                    long_ma = sum(trader_data_dict["tomato_prices"]) / 50
+                    
+                    # BUY LOGIC: Is the short-term trend moving upwards past the long-term trend?
+                    if short_ma > long_ma:
+                        available_to_buy = POSITION_LIMIT - current_position
+                        if available_to_buy > 0:
+                            buy_quantity = min(-best_ask_amount, available_to_buy)
+                            # Additional filter could be added here: if abs(short_ma - long_ma) > spread
+                            print(f"TOMATOES: Upward Trend Detected! Buying at {best_ask}")
+                            orders.append(Order(product, best_ask, buy_quantity))
+                            
+                    # SELL LOGIC: Is the short-term trend diving below the long-term trend?
+                    elif short_ma < long_ma:
+                        capacity_to_short = current_position - (-POSITION_LIMIT)
+                        if capacity_to_short > 0:
+                            sell_quantity = min(best_bid_amount, capacity_to_short)
+                            print(f"TOMATOES: Downward Trend Detected! Shorting at {best_bid}")
+                            orders.append(Order(product, best_bid, -sell_quantity))
+                            
+            # Save our processed orders to the final results dictionary
             result[product] = orders
     
-        # The engine expects these return values
-        traderData = "SAMPLE" 
+        # --- PREPARE DATA FOR NEXT TICK ---
+        # We must package our dictionary back into a raw string before handing it back to the engine
+        new_trader_data_string = json.dumps(trader_data_dict)
+        
         conversions = 0
-        return result, conversions, traderData
+        return result, conversions, new_trader_data_string

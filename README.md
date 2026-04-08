@@ -38,50 +38,101 @@ Your script uses the **Mid-Price** as its **"Fair Value" or "Acceptable Price"**
 ### Position Limits (Inventory)
 Exchanges usually don't let you buy an infinite amount of an item to protect against market manipulation or reckless borrowing. You have a **Position Limit** (e.g. 20).
 - You cannot own more than 20 tomatoes simultaneously (**Long** position limit).
-- You cannot owe more than 20 tomatoes simultaneously (**Short** position limit).
+- You cannot owe more than 20 items simultaneously (**Short** position limit).
 
-Your algorithm tracks your `current_position` as a feature to securely calculate exactly how many items to buy/sell without triggering a penalty.
+Your algorithm checks your `current_position` before ordering to calculate exactly how many items to buy/sell without triggering a penalty.
 
 ---
 
-## 3. The Strategy: "Statistical Market Taking"
+Searching for prices_round_0_day_-1.csv...
+✅ Successfully read 20000 rows from prices_round_0_day_-1.csv
+============================================================
+📊 DATA METRICS FOR: TOMATOES
+  - Average Mid-Price : 4977.57
+  - Minimum Price     : 4946.50
+  - Maximum Price     : 5011.00
+  - Average Spread    : 12.98 (gap between buyers and sellers)
+  - Overall Imbalance : -0.01 (Positive = High demand / Negative = Over-supply)
+  💡 CONCLUSION: This asset is VOLATILE. Use Moving Averages to track it!
+------------------------------------------------------------
+📊 DATA METRICS FOR: EMERALDS
+  - Average Mid-Price : 10000.00
+  - Minimum Price     : 9996.00
+  - Maximum Price     : 10004.00
+  - Average Spread    : 15.74 (gap between buyers and sellers)
+  - Overall Imbalance : -0.01 (Positive = High demand / Negative = Over-supply)
+  💡 CONCLUSION: This asset is VOLATILE. Use Moving Averages to track it!
+------------------------------------------------------------
 
-Your script follows one primary psychological principle: **It looks for deals where others mispriced their items.**
+Searching for prices_round_0_day_-2.csv...
+✅ Successfully read 20000 rows from prices_round_0_day_-2.csv
+============================================================
+📊 DATA METRICS FOR: EMERALDS
+  - Average Mid-Price : 10000.00
+  - Minimum Price     : 9996.00
+  - Maximum Price     : 10004.00
+📊 DATA METRICS FOR: TOMATOES
+  - Average Mid-Price : 5007.95
+  - Minimum Price     : 4988.00
+  - Maximum Price     : 5036.00
+  - Average Spread    : 13.07 (gap between buyers and sellers)
+  - Overall Imbalance : 0.00 (Positive = High demand / Negative = Over-supply)
+  💡 CONCLUSION: This asset is VOLATILE. Use Moving Averages to track it!
+------------------------------------------------------------
 
-Here’s the step-by-step logic your `run()` function performs 1,000 times a second:
 
-1. **Calculate the True Value:** It scans the Order Book, finds the Best Bid and Best Ask, and calculates the `acceptable_price` (the Mid-Price).
-2. **Scan for Cheap Assets (Buy Logic):** It looks at the Best Ask. If a seller is asking for less money than the `acceptable_price`, the script immediately snaps it up! It buys the cheap item because it believes it's worth more.
-3. **Scan for Overpaying Buyers (Sell Logic):** It looks at the Best Bid. If a buyer is willing to pay *more* than the `acceptable_price`, your script will immediately drop what it's holding and sell to them at this premium markup.
-4. **Enforce Rules**: Before every trade, it mathematically ensures you have enough "Position Limit" capacity left.
 
-This is fundamentally how your algorithm ensures you slowly chip away a profit! It buys underpriced assets and sells overpriced ones.
+
+
+
+## 3. The Strategy (Dual Market Approach)
+
+One of the most dangerous things you can do in algorithmic trading is treat two different assets the exact same way. Based on our data analysis, we learned:
+- **EMERALDS** are a **Mean-Reverting** (stable) asset perfectly pegged to `10000`.
+- **TOMATOES** are a **Trending** (volatile) asset whose value heavily shifts over the day.
+
+We cannot use the same math! Therefore, our `run()` method uses a "Dual-Strategy".
+
+### Strategy 1: The Mean-Reversion Anchor (EMERALDS)
+Since we know Emeralds literally never stray far from `10000`, we abandon complex math. 
+If the price ever dips to `9998` or lower, we aggressively buy them, because it's guaranteed to rubber-band back! If they ever spike to `10002`, we aggressively short-sell them.
+
+### Strategy 2: Moving Average Crossovers (TOMATOES)
+Because Tomatoes rapidly shift their value, we must calculate the "Trend". 
+We calculate the **Short Moving Average (10 ticks)** and the **Long Moving Average (50 ticks)**.
+- **Buying Condition:** If the short-term trend violently crosses *above* the long-term trend, momentum is swinging up! This is a buy signal.
+- **Selling Condition:** If the short-term trend dives *underneath* the long-term trend, the market is panicking down! This is a sell signal to exit your positions.
 
 ---
 
 ## 4. Code Walkthrough (`trader.py`)
 
-If you want to edit or tune the script yourself, here is a line-by-line explanation of the most important block!
+To calculate a 50-tick moving average, our bot needs a "Memory". 
+The IMC container normally wipes all memory clean every time it calls your bot.
+**The Secret:** The system provides you a string variable called `traderData`. By using Python's `json` dictionary converter, we can secretly store 50 prices in a python list, convert it to a string, hand it back to the system, and ask for it back on the next tick!
 
 ```python
-# 1. We grab the cheapest sale price (best_ask) and the highest purchase price (best_bid).
-best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+# 1. LOAD OUR MEMORY: Convert the system-provided string back into a Python Dictionary
+try:
+    trader_data_dict = json.loads(state.traderData)
+except json.JSONDecodeError:
+    trader_data_dict = {"tomato_prices": []} # Fresh start!
 
-# 2. We calculate our Fair Value (Mid-Price).
-acceptable_price = (best_ask + best_bid) / 2
+# 2. Add our new data to Memory!
+trader_data_dict["tomato_prices"].append(mid_price)
 
-# 3. We check if the cheapest item being sold is CHEAPER than its True Fair Value.
-if int(best_ask) < acceptable_price:
+# 3. Calculate out the 50-tick and 10-tick Averages!
+short_ma = sum(trader_data_dict["tomato_prices"][-10:]) / 10
+long_ma = sum(trader_data_dict["tomato_prices"]) / 50
 
-    # 4. We calculate how many we're allowed to buy based on our limit constraint (e.g., Limit 20)
-    available_to_buy_capacity = position_limit - current_position
-    
-    if available_to_buy_capacity > 0:
-        # 5. Determine the precise quantity to buy and submit the Order
-        # We buy the amount the seller is selling (-best_ask_amount), OR whatever capacity we have left.
-        buy_quantity = min(-best_ask_amount, available_to_buy_capacity)
-        orders.append(Order(product, best_ask, buy_quantity))
+# 4. Momentum Detect! Buy when short jumps over long.
+if short_ma > long_ma:
+    buy_quantity = min(-best_ask_amount, available_to_buy)
+    orders.append(Order(product, best_ask, buy_quantity))
+
+# 5. SAVE OUR MEMORY: Lock our memory back into a raw string to give back to the IMC framework!
+new_trader_data_string = json.dumps(trader_data_dict)
+return result, conversions, new_trader_data_string
 ```
 
 ## 5. Local Testing using `datamodel.py`
